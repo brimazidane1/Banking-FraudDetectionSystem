@@ -1,5 +1,5 @@
 
-# Digital Banking System
+# Digital Banking System Release
 ### Real-Time Fraud Detection & Payment Processing
 
 A microservices-based digital banking learning project built with **Java, Spring Boot, Apache Kafka, Redis, and Saga-based transaction compensation**.
