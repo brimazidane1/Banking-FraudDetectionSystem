@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WorkspaceSettings">
+    <project name="account-service" path="$PROJECT_DIR$/account-service" />
+    <project name="account-service" path="$PROJECT_DIR$/account-service" />
+    <project name="account-service" path="$PROJECT_DIR$/account-service" />
+    <project name="api-gateway" path="$PROJECT_DIR$/api-gateway" />
+    <project name="api-gateway" path="$PROJECT_DIR$/api-gateway" />
+    <project name="fraud-detection-service" path="$PROJECT_DIR$/fraud-detection-service" />
+    <project name="notification-service" path="$PROJECT_DIR$/notification-service" />
+    <project name="payment-service" path="$PROJECT_DIR$/payment-service" />
+    <project name="transaction-service" path="$PROJECT_DIR$/transaction-service" />
+    <option name="workspace" value="true" />
+  </component>
+</project>
