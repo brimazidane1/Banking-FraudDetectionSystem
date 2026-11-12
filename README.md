@@ -1,347 +1,705 @@
+# Digital Banking System --- Fraud Detection & Payment Processing
 
-# Digital Banking System Release
-### Real-Time Fraud Detection & Payment Processing
+A personal backend learning project that explores how a digital banking
+system can be designed with **Spring Boot microservices**, **Apache
+Kafka**, **Redis**, and distributed transaction patterns.
 
-A microservices-based digital banking learning project built with **Java, Spring Boot, Apache Kafka, Redis, and Saga-based transaction compensation**.
+The project focuses on fund transfers, rule-based fraud screening, OTP
+verification, compensation/refund flows, and payment processing through
+Razorpay.
 
----
+> **Learning project only.** This repository is for educational
+> purposes. It is not a production banking platform and must not be used
+> to process real funds or store real customer information.
 
-## 📌 Overview
+## Table of Contents
 
-This project demonstrates a digital banking system with fund transfers, real-time fraud detection, OTP-based transaction verification, payment processing, and event-driven notifications.
+-   [Project Goals](#project-goals)
+-   [Main Features](#main-features)
+-   [Architecture Overview](#architecture-overview)
+-   [Fraud Detection Rules](#fraud-detection-rules)
+-   [Transaction and OTP Flow](#transaction-and-otp-flow)
+-   [Kafka Event Mapping](#kafka-event-mapping)
+-   [Idempotency Guard](#idempotency-guard)
+-   [Saga Compensation and Refund](#saga-compensation-and-refund)
+-   [Razorpay Payment Flow](#razorpay-payment-flow)
+-   [Webhook Handling](#webhook-handling)
+-   [Notification Flow](#notification-flow)
+-   [Technology Stack](#technology-stack)
+-   [Getting Started](#getting-started)
+-   [Configuration](#configuration)
+-   [Testing Scenarios](#testing-scenarios)
+-   [Security and Reliability Notes](#security-and-reliability-notes)
+-   [Possible Improvements](#possible-improvements)
+-   [Reference](#reference)
 
-The system separates business responsibilities into multiple backend services. Apache Kafka supports asynchronous communication, Redis stores temporary OTP data, and the Saga pattern coordinates compensating actions when a transaction cannot be completed.
+## Project Goals
 
-> **Project Type:** Personal Learning Project  
-> This project is intended to demonstrate backend development concepts and integration patterns. It is not a production banking platform and should not be used to process real customer funds.
+The main goals of this project are to:
 
-## ✨ Key Features
+-   Build backend services with a microservices-oriented architecture
+    using Spring Boot.
+-   Understand asynchronous communication between services with Apache
+    Kafka.
+-   Implement rule-based fraud screening for fund transfers.
+-   Handle OTP generation and verification within the Transaction
+    Service, with Redis used for temporary OTP storage and expiration.
+-   Explore distributed transaction handling with the Saga pattern and
+    compensation actions.
+-   Integrate an external payment provider through Razorpay order
+    creation and webhook callbacks.
+-   Understand how services react to business events without tightly
+    coupling every operation through synchronous API calls.
 
-| Feature | Description |
-|---|---|
-| **Fund Transfer** | Handles transfers between accounts and coordinates transaction processing. |
-| **Real-Time Fraud Detection** | Detects suspicious transactions using velocity, average transaction amount, and account balance checks. |
-| **OTP Verification** | Requires additional verification when a transaction is flagged as suspicious. |
-| **Transaction Idempotency Guard** | Uses transaction states such as `PROCESSING` to help prevent duplicate processing. |
-| **Saga Compensation** | Reverses previously applied balance changes when a transaction fails or is cancelled. |
-| **Razorpay Integration** | Creates payment orders and handles payment status updates through webhooks. |
-| **Event-Driven Notifications** | Notifies users about completed transactions, fraud detection, and payment failures. |
+## Main Features
 
-## 🧰 Technology Stack
+-   **Account management:** account-related operations and balance
+    updates.
+-   **Fund transfers:** initiate and process transfers between accounts.
+-   **Fraud screening:** evaluate transactions using configurable rule
+    thresholds.
+-   **OTP verification:** generate and verify OTPs in the Transaction
+    Service.
+-   **Temporary OTP storage:** use Redis with a time-to-live (TTL) for
+    OTP data.
+-   **Event-driven communication:** publish and consume business events
+    through Kafka.
+-   **Compensation/refund:** reverse balance changes when a transfer
+    must be rolled back.
+-   **Payment processing:** create Razorpay orders and process payment
+    webhook events.
+-   **Notifications:** react to OTP, transaction, fraud, refund, and
+    payment events.
 
-| Category | Technologies |
-|---|---|
-| Language & Framework | Java, Spring Boot |
-| Persistence | Spring Data JPA, Hibernate, Relational Database |
-| Messaging | Apache Kafka |
-| Caching & Temporary Storage | Redis |
-| Architecture | Microservices, Event-Driven Architecture, API Gateway |
-| Distributed Transactions | Saga Pattern |
-| Payment Integration | Razorpay |
-| Build & Containerization | Maven, Docker, Docker Compose |
+## Architecture Overview
 
-## 🏛️ High-Level Architecture
+The system is divided into services with separate responsibilities.
+Kafka is used for asynchronous event communication between the
+Transaction, Fraud Detection, Account, Payment, and Notification
+services. Redis is used by the Transaction Service for temporary OTP
+storage.
 
-The following diagram illustrates the main components and communication patterns.
-
-```mermaid
+``` mermaid
 flowchart TB
     Client[Frontend / Client]
     Gateway[API Gateway]
 
+    Account[Account Service]
+    Transaction[Transaction Service]
+    Fraud[Fraud Detection Service]
+    Payment[Payment Service]
+    Notification[Notification Service]
+
+    Kafka[(Apache Kafka)]
+    Redis[(Redis)]
+    Razorpay[Razorpay]
+
     Client --> Gateway
+    Gateway --> Account
+    Gateway --> Transaction
+    Gateway --> Payment
 
-    Gateway --> Account[Account Service]
-    Gateway --> Transaction[Transaction Service]
-    Gateway --> Payment[Payment Service]
-    Gateway --> Verification[OTP / Verification Service]
+    Transaction <-->|Store and retrieve OTP| Redis
 
-    Transaction --> Fraud[Fraud Detection]
-    Transaction <--> Kafka[(Apache Kafka)]
-    Fraud --> Kafka
-    Verification <--> Redis[(Redis)]
-    Payment <--> Razorpay[Razorpay]
-    Razorpay -->|Webhook| Payment
+    Transaction -->|transaction.initiated| Kafka
+    Kafka -->|transaction.initiated| Fraud
 
-    Kafka --> Notification[Notification Service]
+    Fraud -->|verification.required| Kafka
+    Fraud -->|fraud.check.clean| Kafka
+    Kafka -->|verification.required / fraud.check.clean| Transaction
+
+    Transaction -->|transaction.otp.generated| Kafka
+    Transaction -->|transaction.completed| Kafka
+    Transaction -->|fraud.detected| Kafka
+    Transaction -->|transaction.refunded| Kafka
+
+    Kafka -->|transaction.completed / fraud.detected| Account
+    Kafka -->|OTP, transaction, fraud and refund events| Notification
+
+    Payment <--> Razorpay
+    Razorpay -->|Payment webhook| Payment
+    Payment -->|payment.completed / payment.failed| Kafka
 ```
 
-### Core Components
+The diagram is a conceptual overview of the service and event
+relationships. The exact request paths, persistence boundaries, and
+deployment topology depend on the implementation in the repository.
 
-- **API Gateway** — provides a common entry point and routes client requests to backend services.
-- **Account Service** — handles account-related operations and balance updates.
-- **Transaction Service** — coordinates fund transfers and manages transaction states.
-- **Fraud Detection** — evaluates transaction activity against configured fraud patterns.
-- **OTP Verification Service** — handles additional transaction verification.
-- **Payment Service** — creates payment orders and processes payment gateway webhooks.
-- **Notification Service** — handles transaction and security notifications.
-- **Apache Kafka** — enables asynchronous communication between services.
-- **Redis** — stores temporary OTP values with expiration.
+### Service Responsibilities
 
-## 🔍 Fraud Detection
+  -----------------------------------------------------------------------
+  Service                             Responsibility
+  ----------------------------------- -----------------------------------
+  **Account Service**                 Handles account-related operations
+                                      and balance updates. Consumes
+                                      transaction outcome events to apply
+                                      the corresponding account-side
+                                      changes.
 
-The fraud detection process evaluates transactions using three main checks.
+  **Transaction Service**             Handles transfer requests,
+                                      transaction state, OTP generation
+                                      and verification, and the
+                                      transaction-side coordination of
+                                      completion or compensation.
+
+  **Fraud Detection Service**         Consumes initiated transaction
+                                      events, evaluates fraud rules, and
+                                      publishes the screening result.
+
+  **Payment Service**                 Creates payment orders, handles
+                                      Razorpay webhook callbacks, updates
+                                      payment records, and publishes
+                                      payment outcome events.
+
+  **Notification Service**            Consumes relevant Kafka events and
+                                      sends notifications for OTP,
+                                      transaction, fraud, refund, and
+                                      payment updates.
+  -----------------------------------------------------------------------
+
+**OTP is not a separate microservice in this project.** OTP generation
+and verification are handled by the Transaction Service, which uses
+Redis to store temporary OTP values.
+
+## Fraud Detection Rules
+
+The Fraud Detection Service evaluates transactions using three rule
+patterns. The thresholds below are examples of configurable rules, not
+universal banking limits.
 
 ### 1. Velocity Check
 
-Detects unusually frequent transactions within a short period.
+Detects an unusually high number of transactions within a short period.
 
-**Example:** Multiple transactions initiated by the same user within one minute may be considered suspicious.
+Examples: - 5 transactions within 1 minute. - 10 transactions within 1
+minute. - 20 transactions within 1 minute.
 
-### 2. Average Transaction Amount Check
+A transaction can be flagged for additional verification when the
+configured transaction-count threshold is reached.
 
-Compares the current transaction amount against the user's historical average transaction amount.
+### 2. Average Transaction Check
 
-**Example:** A transaction that is several times higher than the user's average may trigger additional verification.
+Compares the current transaction amount with the user's historical
+average transaction amount.
 
-### 3. Account Balance Check
+Examples: - Current amount exceeds 3x the user's average. - Current
+amount exceeds 4x the user's average. - Current amount exceeds 6x the
+user's average.
 
-Checks whether the transaction amount represents an unusually large portion of the user's available balance.
+The configured multiplier determines when the transaction requires
+additional verification.
 
-**Example:** A transfer close to 90% of the user's balance may be flagged for verification.
+### 3. Balance Check
 
-> The thresholds above are illustrative examples. Actual thresholds should be configurable based on business rules and transaction data.
+Checks whether the requested transfer consumes an unusually large
+portion of the user's available balance.
 
-When a transaction is considered suspicious, the system can require OTP verification before allowing the transaction to continue.
+Example: - The transfer amount is around 90% of the available balance.
 
-## 🔐 OTP Verification Flow
+The percentage is configurable and should be treated as a screening
+signal, not proof of fraudulent activity.
 
-OTP verification provides an additional security step for transactions flagged by fraud detection.
+### Screening Outcome
 
-```mermaid
-flowchart TD
-    A[Transaction flagged as suspicious] --> B[Generate OTP]
-    B --> C[Store OTP in Redis with expiration]
-    C --> D[Ask user to verify OTP]
-    D --> E{OTP available in Redis?}
+The rules are used to identify transactions that may require additional
+verification. A suspicious screening result does not automatically prove
+that fraud has occurred. The Fraud Detection Service communicates its
+result to the Transaction Service through Kafka.
 
-    E -->|No - expired or missing| F[Trigger compensation]
-    E -->|Yes| G{Does OTP match?}
+## Transaction and OTP Flow
 
-    G -->|No| H[Block account and trigger refund]
-    G -->|Yes| I[Verification successful]
+The Transaction Service coordinates the transfer workflow. When a
+transfer is initiated, it publishes an event so that the Fraud Detection
+Service can evaluate the transaction asynchronously.
 
-    I --> J[Continue transaction]
-    F --> K[Mark transaction as FLAGGED]
-    H --> L[Reverse balance changes]
+``` mermaid
+sequenceDiagram
+    participant User
+    participant TS as Transaction Service
+    participant Kafka
+    participant FDS as Fraud Detection Service
+    participant Redis
+    participant NS as Notification Service
+
+    User->>TS: Submit transfer request
+    TS->>TS: Validate request and create transaction
+    TS->>Kafka: Publish transaction.initiated
+    Kafka->>FDS: Deliver transaction.initiated
+    FDS->>FDS: Evaluate fraud rules
+
+    alt Additional verification required
+        FDS->>Kafka: Publish verification.required
+        Kafka->>TS: Deliver verification.required
+        TS->>TS: Check transaction state
+        TS->>TS: Generate OTP
+        TS->>Redis: Store OTP with TTL
+        TS->>Kafka: Publish transaction.otp.generated
+        Kafka->>NS: Deliver transaction.otp.generated
+        NS-->>User: Send OTP notification
+        User->>TS: Submit OTP
+        TS->>Redis: Retrieve and validate OTP
+        TS->>TS: Continue or compensate transaction
+    else Screening result is clean
+        FDS->>Kafka: Publish fraud.check.clean
+        Kafka->>TS: Deliver fraud.check.clean
+        TS->>TS: Continue normal transaction flow
+    end
 ```
 
-### Verification Scenarios
+### OTP Verification Cases
 
-| Scenario | Expected Handling |
-|---|---|
-| **OTP expired or missing** | Redis returns no OTP value. Compensation is triggered and the transaction is marked as `FLAGGED`. |
-| **OTP does not match** | The account is blocked according to the described flow, and the transaction is compensated/refunded. |
-| **OTP matches** | Verification succeeds and transaction processing continues. |
+When additional verification is required, the Transaction Service
+generates an OTP and stores it in Redis with an expiration time.
 
-## 🔁 Transaction Idempotency & Saga Compensation
+  -----------------------------------------------------------------------
+  Scenario                            Expected handling
+  ----------------------------------- -----------------------------------
+  **Valid OTP**                       Verification succeeds and the
+                                      transaction can continue through
+                                      its completion flow.
 
-Distributed transactions may involve multiple services and balance updates. If a later step fails, the system needs to reverse the effects that have already been applied.
+  **Expired or missing OTP**          Redis returns no usable OTP value
+                                      (for example, `null` after
+                                      expiration). The configured failure
+                                      flow triggers compensation/refund
+                                      and updates the transaction state,
+                                      such as marking it `FLAGGED`.
 
-### Idempotency Guard
+  **Incorrect OTP**                   The configured failure flow can
+                                      block the account and trigger
+                                      compensation/refund.
+  -----------------------------------------------------------------------
 
-For transactions requiring verification, the transaction state (for example, `PROCESSING`) acts as a guard against repeated processing.
+The exact state transitions and failure handling should be checked
+against the implementation. Redis TTL provides automatic expiration for
+temporary OTP values; it does not replace OTP attempt limits or replay
+protection.
 
-This helps prevent the same transaction from being applied more than once when verification requests or events are repeated.
+## Kafka Event Mapping
 
-### Saga Compensation
+The following table documents the producer-consumer relationships used
+by this project.
 
-If a transaction cannot be completed, the system performs compensating actions to reverse previously applied changes.
+  -----------------------------------------------------------------------------
+  Kafka Topic                   Producer                Consumer
+  ----------------------------- ----------------------- -----------------------
+  `transaction.initiated`       Transaction Service     Fraud Detection Service
 
-**Example compensation flow:**
+  `verification.required`       Fraud Detection Service Transaction Service
 
-1. A transfer is initiated by the sender.
-2. The receiver's balance is credited as part of the transfer process.
-3. Verification fails or the OTP expires.
-4. The compensation flow reverses the receiver's credit.
-5. The amount is credited back to the sender.
-6. The transaction is updated to the appropriate failure or flagged state.
+  `fraud.check.clean`           Fraud Detection Service Transaction Service
 
-```mermaid
+  `transaction.otp.generated`   Transaction Service     Notification Service
+
+  `transaction.completed`       Transaction Service     Account Service,
+                                                        Notification Service
+
+  `fraud.detected`              Transaction Service     Account Service,
+                                                        Notification Service
+
+  `transaction.refunded`        Transaction Service     Notification Service
+
+  `payment.completed`           Payment Service         Notification Service
+
+  `payment.failed`              Payment Service         Notification Service
+  -----------------------------------------------------------------------------
+
+### Event Flow Notes
+
+-   `transaction.initiated` starts asynchronous fraud screening.
+-   `verification.required` and `fraud.check.clean` communicate the
+    screening outcome back to the Transaction Service.
+-   `transaction.otp.generated` is published by the Transaction Service
+    after OTP generation; the Notification Service consumes it to notify
+    the user.
+-   `transaction.completed` is consumed by the Account Service and
+    Notification Service.
+-   In this implementation, **`fraud.detected` is published by the
+    Transaction Service**, then consumed by the Account Service and
+    Notification Service.
+-   `transaction.refunded` is consumed by the Notification Service.
+-   Payment outcome events are published by the Payment Service and
+    consumed by the Notification Service.
+
+## Idempotency Guard
+
+Kafka consumers may receive duplicate events, and clients may retry
+requests. The transaction flow therefore uses the transaction status
+(for example, `PROCESSING`) as a state guard before continuing certain
+operations, such as handling a verification-required result.
+
+The guard helps reduce duplicate processing, such as generating or
+handling an OTP repeatedly for a transaction that is already being
+processed.
+
+However, a status check by itself is **not** a complete exactly-once
+processing guarantee. In a concurrent or distributed environment,
+production-grade idempotency should also consider:
+
+-   Atomic state transitions, such as conditional database updates.
+-   A unique idempotency key for client-submitted operations.
+-   Idempotent Kafka consumers that safely handle repeated event
+    delivery.
+-   Duplicate-event tracking or an inbox pattern where appropriate.
+-   Compensation operations that cannot be applied more than once.
+
+## Saga Compensation and Refund
+
+A distributed transfer can involve balance changes in more than one
+service or database. A single database rollback cannot automatically
+undo work that has already committed in another service.
+
+When a transfer needs to be reversed, the compensation flow is
+responsible for restoring the affected balances.
+
+### Compensation Steps
+
+1.  **Credit the sender:** return the refunded amount to the sender's
+    account.
+2.  **Reverse the receiver credit:** deduct the amount that was
+    previously credited to the receiver.
+3.  **Update transaction state:** record the appropriate failure,
+    flagged, or refunded state according to the business flow.
+4.  **Publish the outcome:** publish the relevant event, such as
+    `transaction.refunded`, so downstream services can react.
+
+``` mermaid
 flowchart TD
-    A[Start transfer] --> B[Process transaction]
-    B --> C[Apply balance changes]
-    C --> D{Processing successful?}
+    Start[Transfer requires reversal]
+    Sender[Credit refunded amount to sender]
+    Receiver[Reverse credit from receiver]
+    State[Update transaction state]
+    Event[Publish transaction.refunded]
+    Done[Compensation flow completed]
 
-    D -->|Yes| E[Complete transaction]
-    D -->|No| F[Start Saga compensation]
-
-    F --> G[Reverse receiver credit]
-    G --> H[Refund sender]
-    H --> I[Update transaction state]
+    Start --> Sender
+    Sender --> Receiver
+    Receiver --> State
+    State --> Event
+    Event --> Done
 ```
 
-> A transaction status check alone does not guarantee exactly-once processing across distributed services. A robust implementation should also consider atomic state transitions, idempotency keys, and idempotent event consumers.
+Compensation must itself be idempotent. If the same failure event is
+processed more than once, the system must not refund the sender twice or
+deduct the receiver's balance repeatedly.
 
-## 💳 Razorpay Payment Integration
+## Razorpay Payment Flow
 
-The payment integration demonstrates how the backend creates a payment order and receives payment status updates asynchronously.
+The Payment Service integrates with Razorpay for payment processing.
 
-### Create Payment Order
-
-1. The backend creates an order through Razorpay.
-2. The backend saves the payment record in its database.
-3. The backend returns the order details to the frontend.
-4. The frontend opens the Razorpay Checkout experience.
-5. The user completes the payment.
-
-### Webhook Handling
-
-After a payment event occurs, Razorpay sends an HTTP `POST` request to the backend webhook endpoint.
-
-The backend receives the event and updates the corresponding payment status.
-
-```mermaid
+``` mermaid
 sequenceDiagram
     participant User
     participant Frontend
-    participant Backend as Payment Service
-    participant DB as Database
-    participant Razorpay
+    participant PS as Payment Service
+    participant DB as Payment Database
+    participant RZ as Razorpay
+    participant Kafka
+    participant NS as Notification Service
 
-    User->>Frontend: Initiate payment
-    Frontend->>Backend: Request payment order
-    Backend->>Razorpay: Create order
-    Razorpay-->>Backend: Return order details
-    Backend->>DB: Save payment record
-    Backend-->>Frontend: Return order details
-    Frontend->>Razorpay: Open Checkout
-    User->>Razorpay: Complete payment
-    Razorpay->>Backend: Send webhook (HTTP POST)
-    Backend->>Backend: Validate and process event
-    Backend->>DB: Update payment status
+    User->>Frontend: Start payment
+    Frontend->>PS: Request payment order
+    PS->>RZ: Create order
+    RZ-->>PS: Return order details
+    PS->>DB: Save payment record
+    PS-->>Frontend: Return order details
+    Frontend->>RZ: Open Razorpay Checkout
+    User->>RZ: Complete payment
+    RZ->>PS: Send payment webhook
+    PS->>PS: Process payment event
+    PS->>DB: Update payment record
+    alt Payment successful
+        PS->>Kafka: Publish payment.completed
+    else Payment failed
+        PS->>Kafka: Publish payment.failed
+    end
+    Kafka->>NS: Deliver payment outcome event
+    NS-->>User: Send payment notification
 ```
 
-### Webhook Security Considerations
+### Payment Steps
 
-- Verify webhook signatures using the configured webhook secret.
-- Do not trust payment status supplied only by the frontend.
-- Handle duplicate webhook deliveries safely.
-- Match each webhook event to the correct payment/order record.
-- Keep API keys and webhook secrets outside source control.
+1.  The frontend asks the Payment Service to create a payment order.
+2.  The Payment Service creates an order through Razorpay.
+3.  The Payment Service stores a payment record and returns the order
+    details to the frontend.
+4.  The frontend displays Razorpay Checkout.
+5.  The user completes the payment through Razorpay.
+6.  Razorpay sends an HTTP `POST` webhook to the backend.
+7.  The Payment Service processes the webhook and updates the payment
+    record.
+8.  The Payment Service publishes `payment.completed` or
+    `payment.failed`.
+9.  The Notification Service consumes the event and sends the
+    corresponding notification.
 
-## 🔔 Notification Scenarios
+## Webhook Handling
 
-The notification flow covers important transaction and payment events.
+Razorpay uses webhooks to notify the backend about payment events.
 
-| Event | Notification |
-|---|---|
-| Transaction completed | Notify both sender and receiver. |
-| Fraud detected | Notify the affected user about suspicious activity or additional verification. |
-| External payment service failure | Notify the user that the payment could not be completed. |
+The Payment Service is responsible for receiving and processing the
+webhook callback, updating the payment record, and publishing the
+corresponding Kafka event.
 
-Notifications use event-driven communication so the main transaction flow does not need to perform every notification task synchronously.
+For a production integration, webhook handling should include:
 
-## 🚀 Getting Started
+-   Verify the webhook signature using the configured webhook secret.
+-   Validate the event and payment/order identifiers.
+-   Handle duplicate webhook deliveries idempotently.
+-   Reject or safely ignore events that have already been processed.
+-   Avoid trusting frontend payment status as the sole source of truth.
+-   Keep webhook secrets outside source control.
 
-The following steps provide a general setup guide. Use the actual configuration and module names available in your repository.
+These are important reliability and security requirements; verify each
+one against the actual implementation before describing it as already
+implemented.
+
+## Notification Flow
+
+The Notification Service consumes Kafka events and sends the relevant
+user notifications.
+
+  -----------------------------------------------------------------------
+  Kafka Topic                         Notification
+  ----------------------------------- -----------------------------------
+  `transaction.otp.generated`         Sends the generated OTP to the
+                                      relevant user.
+
+  `transaction.completed`             Notifies the sender and receiver
+                                      about the completed transaction.
+
+  `fraud.detected`                    Notifies the relevant user about
+                                      suspicious activity.
+
+  `transaction.refunded`              Notifies the relevant user about a
+                                      refund or compensation.
+
+  `payment.completed`                 Notifies the user that the payment
+                                      is completed.
+
+  `payment.failed`                    Notifies the user that the payment
+                                      failed.
+  -----------------------------------------------------------------------
+
+## Technology Stack
+
+  -----------------------------------------------------------------------
+  Technology                          Usage
+  ----------------------------------- -----------------------------------
+  **Java**                            Main programming language.
+
+  **Spring Boot**                     Backend application framework.
+
+  **Spring Data JPA / Hibernate**     Data access and object-relational
+                                      mapping.
+
+  **Apache Kafka**                    Asynchronous event-driven
+                                      communication between services.
+
+  **Redis**                           Temporary OTP storage with
+                                      expiration (TTL).
+
+  **Microservices**                   Separation of backend business
+                                      responsibilities.
+
+  **API Gateway**                     Entry point and request routing to
+                                      backend services.
+
+  **Saga Pattern**                    Coordination of distributed
+                                      transaction compensation.
+
+  **Razorpay**                        Payment order and Checkout
+                                      integration.
+
+  **Docker / Docker Compose**         Containerization and local service
+                                      orchestration.
+
+  **Relational Database**             Persistent application data.
+  -----------------------------------------------------------------------
+
+The exact database products, framework versions, service ports, and
+deployment configuration should be taken from the project configuration
+files.
+
+## Getting Started
 
 ### Prerequisites
 
-- Java (use the version required by the project)
-- Maven
-- Apache Kafka
-- Redis
-- A relational database configured by the project
-- Docker and Docker Compose (if using the container setup)
-- Razorpay test credentials (if testing payment integration)
+Install the tools required by the services in this repository:
 
-### 1. Clone the Repository
+-   JDK version compatible with the project.
+-   Maven or the included Maven Wrapper.
+-   Docker Engine / Docker Desktop.
+-   Docker Compose.
+-   Git.
 
-```bash
+### Clone the Repository
+
+``` bash
 git clone <your-repository-url>
 cd <repository-folder>
 ```
 
-### 2. Configure Application Properties
+### Start Infrastructure
 
-Review each service's configuration file, such as `application.yml` or `application.properties`.
+If the repository includes a Docker Compose configuration for
+infrastructure and supporting services:
 
-Configure the required connection details for:
-
-- Database
-- Kafka brokers
-- Redis
-- Service-to-service communication
-- Razorpay API credentials and webhook secret, if payment integration is enabled
-
-Use environment variables or local, untracked configuration files for secrets. Never commit real credentials.
-
-### 3. Build the Project
-
-If the repository is configured as a Maven project:
-
-```bash
-mvn clean package
+``` bash
+docker compose up -d
+docker compose ps
 ```
 
-For a multi-module repository, run the command from the appropriate root directory or follow the module-specific build instructions.
+### Run a Spring Boot Service
 
-### 4. Start Dependencies and Services
+Move to the relevant service directory and run it using the Maven
+Wrapper:
 
-Start the required infrastructure, such as the database, Kafka, and Redis, using your local setup or the provided Docker Compose configuration.
+**macOS / Linux**
 
-Then start the backend services in the order required by their dependencies.
+``` bash
+./mvnw spring-boot:run
+```
 
-### 5. Test the Main Flows
+**Windows**
 
-Use the available frontend, API client, or Postman collection to test the flows supported by your implementation.
+``` bat
+mvnw.cmd spring-boot:run
+```
 
-## 🧪 Suggested Test Scenarios
+If the repository uses a root-level multi-module Maven build, follow its
+module-specific run instructions instead. The commands above are generic
+examples; adjust the directory and command to match the actual
+repository structure.
 
-| Test | Expected Result |
-|---|---|
-| Normal transfer | Transaction completes and sender/receiver balances are updated. |
-| High transaction velocity | Fraud detection flags the transaction for verification. |
-| Transaction amount far above average | Additional verification is triggered. |
-| Transaction uses a large portion of account balance | Transaction is flagged based on the configured rule. |
-| Valid OTP | Verification succeeds and transaction processing continues. |
-| Expired or missing OTP | Compensation is triggered and transaction is marked `FLAGGED`. |
-| Incorrect OTP | Account blocking and compensation follow the configured flow. |
-| Duplicate verification request | Transaction state/idempotency guard prevents duplicate application. |
-| Payment webhook received | Payment record is updated based on the validated event. |
-| Duplicate payment webhook | The same update is not applied more than once. |
-| Payment gateway failure | Failure is handled and the user is notified. |
+### Stop Docker Services
 
-## 🔒 Security & Reliability Notes
+``` bash
+docker compose down
+```
 
-This project is for learning and should not be treated as production-ready financial software.
+## Configuration
 
-A production implementation would require additional considerations, including:
+Configure each service using the project's application configuration
+files or environment variables.
 
-- Strong authentication and authorization.
-- Secure handling of credentials, OTPs, and personal data.
-- OTP rate limiting, attempt limits, and expiration policies.
-- Verified payment webhooks and duplicate-event protection.
-- Atomic balance updates and concurrency control.
-- Idempotent consumers and reliable event publishing.
-- Audit logging, monitoring, and alerting.
-- Reconciliation and operational handling for inconsistent payment or transaction states.
-- Proper testing, security review, and compliance assessment.
+Typical configuration categories include:
 
-**Never use real customer data, real banking credentials, or live payment credentials when experimenting with this learning project.**
+-   Database connection details.
+-   Kafka bootstrap servers and topic names.
+-   Redis host, port, and connection settings.
+-   Service-to-service URLs.
+-   Razorpay API key and secret.
+-   Razorpay webhook secret.
+-   OTP expiration duration and related verification settings.
 
-## 📚 Learning Outcomes
+Do not commit real credentials, API secrets, webhook secrets, or
+personal information to the repository. Use local environment variables
+or an appropriate secrets-management solution.
 
-Through this project, the main backend concepts explored include:
+## Testing Scenarios
 
-- Building RESTful services with Spring Boot.
-- Separating business capabilities using microservices.
-- Communicating asynchronously with Apache Kafka.
-- Using Redis for temporary OTP storage and expiration.
-- Applying fraud detection rules to transaction behavior.
-- Coordinating distributed business operations with the Saga pattern.
-- Handling payment orders and webhook-based updates.
-- Designing for duplicate requests and event delivery.
+The following scenarios are useful when validating the main business
+flows.
 
-## 🙌 Acknowledgement
+  --------------------------------------------------------------------------
+  Area                    Scenario                Expected result
+  ----------------------- ----------------------- --------------------------
+  Transfer                Submit a valid transfer Transaction is created and
+                          request                 fraud screening is
+                                                  initiated.
 
-This project was developed as a personal learning exercise based on the tutorial:
+  Fraud screening         Transaction is within   Fraud Detection Service
+                          configured thresholds   publishes
+                                                  `fraud.check.clean`.
 
-**[Full Project: How Banks Detect Fraud | Digital Banking System | Spring Boot + Kafka + Redis + SAGA](https://www.youtube.com/watch?v=7Upc4iCsSh4)** by Yeshendra Dhaker.
+  Fraud screening         Transaction reaches a   Fraud Detection Service
+                          configured suspicious   publishes
+                          threshold               `verification.required`.
 
-Please adjust the architecture, commands, configuration names, and feature descriptions to match the actual source code in this repository.
+  OTP                     Submit a valid OTP      Verification succeeds and
+                                                  the transaction continues.
 
----
+  OTP                     Submit an expired or    The configured failure and
+                          missing OTP             compensation flow is
+                                                  triggered.
 
-**Built for learning Java backend engineering and distributed system concepts.**
+  OTP                     Submit an incorrect OTP The configured invalid-OTP
+                                                  handling is triggered.
+
+  Idempotency             Process the same event  Duplicate processing
+                          more than once          should be prevented or
+                                                  safely handled.
+
+  Compensation            Reverse a transfer      Sender and receiver
+                                                  balances are compensated
+                                                  correctly.
+
+  Payment                 Payment succeeds        Payment Service publishes
+                                                  `payment.completed`.
+
+  Payment                 Payment fails           Payment Service publishes
+                                                  `payment.failed`.
+
+  Notification            Consume a supported     The corresponding
+                          business event          notification is sent.
+  --------------------------------------------------------------------------
+
+## Security and Reliability Notes
+
+This project is intended for learning and should not be considered
+production-ready.
+
+Before using a similar design in a real financial application, consider:
+
+-   **Authentication and authorization:** protect APIs and enforce
+    access control for account and transaction operations.
+-   **Sensitive data:** never use real customer information or
+    production credentials in a learning environment.
+-   **OTP security:** use cryptographically secure generation, short
+    expiration, attempt limits, replay protection, and safe delivery.
+-   **Idempotency:** protect API requests, Kafka consumers, webhook
+    processing, and compensation operations against duplicate execution.
+-   **Atomic state changes:** use database constraints or conditional
+    updates to prevent conflicting concurrent transitions.
+-   **Kafka reliability:** define retry policies, dead-letter handling,
+    consumer error handling, and event schema/versioning strategies.
+-   **Webhook security:** verify Razorpay webhook signatures and
+    validate event identifiers before updating payment state.
+-   **Observability:** add structured logs, metrics, monitoring, and
+    distributed tracing.
+-   **Reconciliation:** provide a way to identify and resolve incomplete
+    transfers or compensation steps.
+-   **Testing and compliance:** perform security, load,
+    failure-recovery, and applicable regulatory testing.
+
+## Possible Improvements
+
+Potential next steps for this learning project:
+
+-   Add more unit and integration tests using JUnit and Mockito.
+-   Strengthen idempotency with unique request keys and atomic state
+    transitions.
+-   Add Kafka retry and dead-letter topic handling.
+-   Add event schema validation and versioning.
+-   Verify Razorpay webhook signatures and add duplicate-event
+    protection.
+-   Improve structured logging, monitoring, and distributed tracing.
+-   Add automated build and test workflows using Jenkins or GitHub
+    Actions.
+-   Practice container deployment to AWS EC2 and image management
+    through Amazon ECR.
+-   Add reconciliation handling for transfers that stop partway through
+    a compensation flow.
+
+## Reference
+
+This project is based on concepts explored while following the tutorial:
+
+-   **Video:** [Full Project: How Banks Detect Fraud \| Digital Banking
+    System \| Spring Boot + Kafka + Redis +
+    SAGA](https://www.youtube.com/watch?v=7Upc4iCsSh4)
+-   **Creator:** Yeshendra Dhaker
+
+The repository is a personal learning implementation and may differ from
+the tutorial or from real-world banking systems.
