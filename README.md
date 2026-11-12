@@ -536,7 +536,7 @@ Install the tools required by the services in this repository:
 ### Clone the Repository
 
 ``` bash
-git clone <your-repository-url>
+git clone https://github.com/brimazidane1/Banking-FraudDetectionSystem.git
 cd <repository-folder>
 ```
 
